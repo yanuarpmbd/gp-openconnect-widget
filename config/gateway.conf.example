@@ -1,0 +1,5 @@
+# GlobalProtect VPN gateway address, used as a fallback by the
+# omarchy-gp-vpn widget if the gateway isn't set via the widget's
+# Customize panel in the bar. Example:
+# GP_GATEWAY=vpn.company.com
+GP_GATEWAY=vpn.example.com

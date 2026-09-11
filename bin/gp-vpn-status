@@ -1,0 +1,10 @@
+#!/bin/bash
+# Prints "connected" if an openconnect VPN session is running, else
+# "disconnected". Used by the bar widget to color the icon.
+set -euo pipefail
+
+if pgrep -x openconnect >/dev/null 2>&1; then
+  echo connected
+else
+  echo disconnected
+fi

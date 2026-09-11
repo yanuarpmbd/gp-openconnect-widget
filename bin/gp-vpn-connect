@@ -1,0 +1,39 @@
+#!/bin/bash
+# Connects to GlobalProtect via openconnect.
+# The GlobalProtect password is read from stdin and never appears in argv.
+set -euo pipefail
+
+GATEWAY="${1:-}"
+USERNAME="${2:-}"
+PASSWORD_FILE="$(mktemp)"
+trap 'rm -f "$PASSWORD_FILE"' EXIT
+cat > "$PASSWORD_FILE"
+
+if [[ -z "$GATEWAY" || -z "$USERNAME" || ! -s "$PASSWORD_FILE" ]]; then
+  echo "Gateway, username, and password are required."
+  exit 2
+fi
+
+if [[ -f /run/gp-vpn.pid ]] && kill -0 "$(cat /run/gp-vpn.pid)" 2>/dev/null; then
+  echo "An openconnect session is already running."
+  exit 3
+fi
+
+echo "Connecting to $GATEWAY..."
+# pkexec may show the system authentication dialog for root privileges.
+# The VPN password remains on openconnect's stdin, separate from pkexec auth.
+pkexec openconnect \
+  --protocol=gp \
+  --user="$USERNAME" \
+  --passwd-on-stdin \
+  --background \
+  --pid-file=/run/gp-vpn.pid \
+  "$GATEWAY" < "$PASSWORD_FILE"
+
+sleep 2
+if [[ -f /run/gp-vpn.pid ]] && kill -0 "$(cat /run/gp-vpn.pid)" 2>/dev/null; then
+  echo "Connected."
+else
+  echo "Authentication or connection failed."
+  exit 1
+fi

@@ -1,0 +1,25 @@
+#!/bin/bash
+# Checks whether a GlobalProtect gateway is reachable.
+set -euo pipefail
+
+GATEWAY="${1:-}"
+if [[ -z "$GATEWAY" ]]; then
+  echo "Gateway is empty."
+  exit 2
+fi
+
+if ! getent ahosts "$GATEWAY" >/dev/null 2>&1; then
+  echo "Gateway hostname could not be resolved: $GATEWAY"
+  exit 1
+fi
+
+if ! curl --silent --show-error --location --insecure \
+    --connect-timeout 8 --max-time 15 \
+    --fail \
+    "https://$GATEWAY/global-protect/portal/portal-config" \
+    -o /dev/null; then
+  echo "Gateway is not reachable: $GATEWAY"
+  exit 1
+fi
+
+echo "Gateway is reachable: $GATEWAY"

@@ -1,0 +1,16 @@
+#!/bin/bash
+# Disconnects the running GlobalProtect/openconnect session.
+set -euo pipefail
+
+if [[ -f /run/gp-vpn.pid ]] && sudo kill "$(cat /run/gp-vpn.pid)" 2>/dev/null; then
+  echo "VPN disconnected."
+else
+  echo "No active pid-file found, trying pkill openconnect..."
+  if sudo pkill -x openconnect; then
+    echo "VPN disconnected."
+  else
+    echo "No running openconnect session found."
+  fi
+fi
+
+sleep 1.5
