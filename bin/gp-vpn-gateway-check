@@ -1,5 +1,11 @@
 #!/bin/bash
-# Checks whether a GlobalProtect gateway is reachable.
+# Checks whether a GlobalProtect gateway host is reachable.
+#
+# This deliberately only proves the host resolves and answers on HTTPS.
+# It does NOT require a specific status code: GlobalProtect gateways answer
+# /global-protect/portal/portal-config with 200, 401, 403 or even 404
+# depending on version and configuration, and every one of those means the
+# host is up. Requiring 2xx produced false "unreachable" failures.
 set -euo pipefail
 
 GATEWAY="${1:-}"
@@ -8,18 +14,29 @@ if [[ -z "$GATEWAY" ]]; then
   exit 2
 fi
 
+# Strip a scheme or trailing slash if the user pasted a URL.
+GATEWAY="${GATEWAY#http://}"
+GATEWAY="${GATEWAY#https://}"
+GATEWAY="${GATEWAY%%/*}"
+
 if ! getent ahosts "$GATEWAY" >/dev/null 2>&1; then
   echo "Gateway hostname could not be resolved: $GATEWAY"
   exit 1
 fi
 
-if ! curl --silent --show-error --location --insecure \
-    --connect-timeout 8 --max-time 15 \
-    --fail \
-    "https://$GATEWAY/global-protect/portal/portal-config" \
-    -o /dev/null; then
-  echo "Gateway is not reachable: $GATEWAY"
+# Any HTTP response at all (including 4xx) proves the host is serving.
+# Only a transport-level failure counts as unreachable.
+STATUS=$(curl --silent --show-error --location --insecure \
+  --connect-timeout 8 --max-time 15 \
+  --output /dev/null --write-out '%{http_code}' \
+  "https://$GATEWAY/global-protect/portal/portal-config" 2>/dev/null) || {
+    echo "Gateway is not reachable: $GATEWAY"
+    exit 1
+  }
+
+if [[ "$STATUS" == "000" ]]; then
+  echo "Gateway did not answer on HTTPS: $GATEWAY"
   exit 1
 fi
 
-echo "Gateway is reachable: $GATEWAY"
+echo "Gateway is reachable: $GATEWAY (HTTP $STATUS)"

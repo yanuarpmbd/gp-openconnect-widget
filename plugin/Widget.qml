@@ -5,9 +5,14 @@ import qs.Commons
 import qs.Ui
 
 // GlobalProtect flow:
-// left-click -> gateway -> validate gateway -> username/password ->
-// validate credentials -> connected. Successful credentials are stored in
-// the desktop keyring through gp-vpn-credentials.
+// left-click -> if connected, show the session; otherwise
+// gateway -> validate gateway -> username/password -> validate credentials
+// -> connected. Successful credentials are stored in the desktop keyring
+// through gp-vpn-credentials.
+//
+// Status is polled rather than tracked from this widget's own actions: the
+// tunnel can be brought up or torn down outside the UI (a terminal run, a
+// dropped session), and the widget must reflect that.
 BarWidget {
   id: root
   moduleName: "bol.gpvpn"
@@ -30,12 +35,31 @@ BarWidget {
   readonly property string title: flow === "gateway" ? "GlobalProtect VPN"
     : (flow === "connected" ? "VPN Connected" : "GlobalProtect Login")
 
-  readonly property string primaryLabel: flow === "gateway" ? "Check Gateway"
-    : (flow === "connected" ? "Close" : "Connect")
+  // Tab would otherwise walk focus out of this layer-shell surface (the panel
+  // then stops receiving keys entirely), so each field moves focus explicitly.
+  function focusNext(backwards) {
+    var order = (flow === "gateway") ? [gatewayInput]
+      : [usernameInput, passwordInput]
+    var current = order.indexOf(activeFocusItem())
+    var next = current < 0 ? 0 : (current + (backwards ? -1 : 1) + order.length) % order.length
+    order[next].forceActiveFocus()
+  }
+
+  function activeFocusItem() {
+    if (gatewayInput.activeFocus) return gatewayInput
+    if (usernameInput.activeFocus) return usernameInput
+    if (passwordInput.activeFocus) return passwordInput
+    return null
+  }
+
+  // In the connected view the primary action is Disconnect, so a live session
+  // always has an obvious way out.
+  readonly property string primaryLabel: flow === "connected" ? "Disconnect"
+    : (flow === "gateway" ? "Check Gateway" : "Connect")
 
   function primaryAction() {
-    if (flow === "gateway") startGatewayCheck()
-    else if (flow === "connected") closeFlow()
+    if (flow === "connected") disconnect()
+    else if (flow === "gateway") startGatewayCheck()
     else startLogin()
   }
 
@@ -49,17 +73,27 @@ BarWidget {
     Qt.callLater(function() { usernameInput.forceActiveFocus() })
   }
 
+  // Left-click: an established session gets its own view (with Disconnect),
+  // otherwise the connect flow starts.
   function openFlow() {
-    if (connected) {
-      disconnectProcess.running = true
-      return
-    }
-    gateway = configuredGateway
     errorText = ""
     statusText = ""
-    flow = "gateway"
+    if (connected) {
+      flow = "connected"
+      statusText = "Connected to " + (sessionGateway() || gateway || "the VPN")
+    } else {
+      gateway = configuredGateway
+      flow = "gateway"
+      statusText = ""
+    }
     popup.open = true
-    focusGatewayInput()
+    if (flow === "gateway") focusGatewayInput()
+  }
+
+  // The gateway actually in use, read from the running openconnect process so
+  // a session started outside this widget still reports its real endpoint.
+  function sessionGateway() {
+    return String(sessionInfo.text || "").trim()
   }
 
   function closeFlow() {
@@ -108,17 +142,18 @@ BarWidget {
     busy = true
     flow = "connecting"
     statusText = "Validating username and password..."
-    connectProcess.command = ["gp-vpn-connect", gateway, username]
+    connectProcess.command = ["gp-vpn-connect", gateway, username, password]
     connectProcess.running = true
   }
 
   function connectionSucceeded() {
-    connected = true
     busy = false
     flow = "connected"
     statusText = "Connected to " + gateway
-    saveCredentials.command = ["gp-vpn-credentials", "save", gateway, username]
-    saveCredentials.secret = pendingPassword
+    // The poll will also pick this up, but setting it now keeps the bar icon
+    // from lagging behind the panel.
+    connected = true
+    saveCredentials.command = ["gp-vpn-credentials", "save-password", gateway, username, pendingPassword]
     saveCredentials.running = true
   }
 
@@ -126,14 +161,31 @@ BarWidget {
     busy = false
     flow = "credentials"
     errorText = message || "Username or password was rejected."
+    refreshStatus()
   }
 
+  function disconnect() {
+    errorText = ""
+    busy = true
+    statusText = "Disconnecting..."
+    disconnectProcess.running = true
+  }
+
+  function refreshStatus() {
+    statusProcess.running = true
+    sessionProcess.running = true
+  }
+
+  Component.onCompleted: refreshStatus()
+
+  // Poll on a timer as well: the tunnel can go down on its own (network
+  // change, server-side timeout) with no widget action to observe.
   Timer {
     interval: 5000
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: statusProcess.running = true
+    onTriggered: root.refreshStatus()
   }
 
   Process {
@@ -143,6 +195,13 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: root.connected = String(text || "").trim() === "connected"
     }
+  }
+
+  // Which gateway the live session is using, for display in the connected view.
+  Process {
+    id: sessionProcess
+    command: ["bash", "-c", "pgrep -af openconnect | grep -oE '[^ ]+\\.(id|com|net|org|local)( |$)' | head -1 | tr -d ' '"]
+    stdout: StdioCollector { id: sessionInfo; waitForEnd: true }
   }
 
   Process {
@@ -176,6 +235,7 @@ BarWidget {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        // Trim the trailing newline only; a password may contain spaces.
         root.password = String(text || "").replace(/\n$/, "")
         passwordInput.text = root.password
       }
@@ -184,34 +244,40 @@ BarWidget {
 
   Process {
     id: connectProcess
-    stdinEnabled: true
-    onStarted: {
-      write(root.password + "\n")
-      root.password = ""
-    }
     stderr: StdioCollector { waitForEnd: true }
+    stdout: StdioCollector { waitForEnd: true }
     onExited: function(code) {
       if (code === 0) root.connectionSucceeded()
-      else root.connectionFailed("Username or password was rejected, or the VPN connection failed.")
+      else if (code === 3) {
+        // A session was already up; reflect it instead of reporting failure.
+        root.busy = false
+        root.connected = true
+        root.flow = "connected"
+        root.statusText = "Already connected to " + root.gateway
+        root.refreshStatus()
+      }
+      else if (code === 4) root.connectionFailed("Wrong username or password.")
+      else if (code === 5) root.connectionFailed("Gateway is unreachable.")
+      else root.connectionFailed("Connection failed (code " + code + ").")
     }
   }
 
   Process {
     id: saveCredentials
-    property string secret: ""
-    stdinEnabled: true
-    onStarted: {
-      write(secret + "\n")
-      secret = ""
-    }
+    stdout: StdioCollector { waitForEnd: true }
   }
 
   Process {
     id: disconnectProcess
     command: ["gp-vpn-disconnect"]
-    onExited: {
-      root.connected = false
-      root.closeFlow()
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.busy = false
+        root.connected = false
+        root.closeFlow()
+        root.refreshStatus()
+      }
     }
   }
 
@@ -225,7 +291,7 @@ BarWidget {
     slotSize: Style.bar.statusSlot
     active: root.connected
     activeColor: Color.accent
-    tooltipText: root.connected ? "GlobalProtect: connected (click to disconnect)" : "GlobalProtect: click to connect"
+    tooltipText: root.connected ? "GlobalProtect: connected (click for details)" : "GlobalProtect: click to connect"
     onPressed: function(mouseButton) {
       if (mouseButton === Qt.LeftButton) root.openFlow()
     }
@@ -239,7 +305,10 @@ BarWidget {
     open: false
     focusTarget: focusCatcher
     contentWidth: Style.space(360)
-    implicitHeight: Style.space(flow === "gateway" ? 210 : 270)
+    // KeyboardPanel applies contentHeight as a FIXED card height, so a
+    // hardcoded value clips the button row on longer steps. Size it from the
+    // column's real height instead (the pattern Omarchy's own panels use).
+    contentHeight: popup.fittedContentHeight(contentColumn.implicitHeight + Style.space(4))
 
     // PopupCard (xdg-popup) never receives keys, so text fields inside it
     // can't be typed into. KeyboardPanel primes layer-shell keyboard focus
@@ -252,6 +321,7 @@ BarWidget {
       activeFocusOnTab: false
 
       Column {
+        id: contentColumn
         width: parent.width
         spacing: Style.space(6)
 
@@ -271,6 +341,17 @@ BarWidget {
         width: parent.width
       }
 
+      // ---- connected view -------------------------------------------------
+      Text {
+        visible: root.flow === "connected"
+        text: "Your traffic is routed through the GlobalProtect gateway."
+        color: Color.muted
+        font.pixelSize: Style.font.bodySmall
+        wrapMode: Text.WordWrap
+        width: parent.width
+      }
+
+      // ---- gateway step ---------------------------------------------------
       Text {
         visible: root.flow === "gateway"
         text: "Gateway address"
@@ -300,8 +381,11 @@ BarWidget {
           z: -1
         }
         Keys.onReturnPressed: root.startGatewayCheck()
+        Keys.onTabPressed: root.focusNext(false)
+        Keys.onBacktabPressed: root.focusNext(true)
       }
 
+      // ---- credentials step -----------------------------------------------
       Text {
         visible: root.flow === "credentials" || root.flow === "connecting"
         text: "Username"
@@ -363,6 +447,8 @@ BarWidget {
           z: -1
         }
         Keys.onReturnPressed: root.startLogin()
+        Keys.onTabPressed: root.focusNext(false)
+        Keys.onBacktabPressed: root.focusNext(true)
       }
 
       Text {
@@ -379,11 +465,14 @@ BarWidget {
         topPadding: Style.space(4)
         visible: root.flow !== "closed"
 
+        // ---- primary button ---------------------------------------------
+        // In the connected view the primary action is Disconnect, so a live
+        // session always has an obvious way out.
         Rectangle {
           width: Style.space(120)
           height: Style.space(32)
           radius: Style.cornerRadius
-          color: Color.accent
+          color: root.flow === "connected" ? Color.urgent : Color.accent
           Text {
             anchors.centerIn: parent
             text: root.primaryLabel
@@ -408,7 +497,7 @@ BarWidget {
           border.width: 1
           Text {
             anchors.centerIn: parent
-            text: "Cancel"
+            text: "Close"
             color: Color.popups.text
             font.family: Style.font.family
             font.pixelSize: Style.font.body

@@ -1,39 +1,93 @@
 #!/bin/bash
 # Connects to GlobalProtect via openconnect.
-# The GlobalProtect password is read from stdin and never appears in argv.
-set -euo pipefail
+#
+# Usage: gp-vpn-connect <gateway> <username> <password>
+#
+# The password arrives as an ARGUMENT, not on stdin: the QML `Process` that
+# calls this never closes the child's stdin, so anything reading stdin blocks
+# forever waiting for an EOF that never comes.
+#
+# Success is judged by a tun interface that actually carries an IPv4 address.
+# That is the only dependable signal:
+#   - the pid-file is not written in this setup,
+#   - the openconnect process outlives the parent (it daemonises), so the
+#     exit status of the launcher says nothing about the tunnel,
+#   - `ip link show type tun` misses freshly created interfaces, so the
+#     address table must be read instead.
+set -uo pipefail
 
 GATEWAY="${1:-}"
 USERNAME="${2:-}"
-PASSWORD_FILE="$(mktemp)"
-trap 'rm -f "$PASSWORD_FILE"' EXIT
-cat > "$PASSWORD_FILE"
+PW="${3:-}"
 
-if [[ -z "$GATEWAY" || -z "$USERNAME" || ! -s "$PASSWORD_FILE" ]]; then
-  echo "Gateway, username, and password are required."
+if [[ -z "$GATEWAY" || -z "$USERNAME" || -z "$PW" ]]; then
+  echo "Usage: gp-vpn-connect <gateway> <username> <password>"
   exit 2
 fi
 
-if [[ -f /run/gp-vpn.pid ]] && kill -0 "$(cat /run/gp-vpn.pid)" 2>/dev/null; then
+if pgrep -x openconnect >/dev/null 2>&1; then
   echo "An openconnect session is already running."
   exit 3
 fi
 
-echo "Connecting to $GATEWAY..."
-# pkexec may show the system authentication dialog for root privileges.
-# The VPN password remains on openconnect's stdin, separate from pkexec auth.
-pkexec openconnect \
-  --protocol=gp \
-  --user="$USERNAME" \
-  --passwd-on-stdin \
-  --background \
-  --pid-file=/run/gp-vpn.pid \
-  "$GATEWAY" < "$PASSWORD_FILE"
+ENV_FILE="$(mktemp /tmp/gp-vpn-env.XXXXXX)"
+PW_STREAM="$(mktemp /tmp/gp-vpn-pw.XXXXXX)"
+LOG="$(mktemp /tmp/gp-vpn-log.XXXXXX)"
+chmod 600 "$ENV_FILE" "$PW_STREAM" "$LOG"
+trap 'rm -f "$ENV_FILE" "$PW_STREAM" "$LOG"' EXIT
 
-sleep 2
-if [[ -f /run/gp-vpn.pid ]] && kill -0 "$(cat /run/gp-vpn.pid)" 2>/dev/null; then
-  echo "Connected."
-else
-  echo "Authentication or connection failed."
-  exit 1
+printf 'GP_USER=%q\nGP_GW=%q\n' "$USERNAME" "$GATEWAY" > "$ENV_FILE"
+
+# The gateway re-prompts for credentials, and a non-fatal 512 is re-asked. A
+# single stdin line answers only the first prompt, after which openconnect
+# reads the terminal and dies with
+# "fgets (stdin): Inappropriate ioctl for device".
+for _ in $(seq 1 20); do printf '%s\n' "$PW" >> "$PW_STREAM"; done
+unset PW
+
+echo "Connecting to $GATEWAY as $USERNAME ..."
+
+# Record the tunnels that exist now so a new one can be recognised.
+tun_list() {
+  ip -o -4 addr show 2>/dev/null | awk '$2 ~ /^(tun|ppp)[0-9]+$/ {print $2}' | sort | tr '\n' ' '
+}
+TUN_BEFORE="$(tun_list)"
+
+# --background daemonises openconnect, so its exit status is not the tunnel's
+# fate; the log is what tells us how it went.
+pkexec sh -c '
+  . "$1"
+  exec openconnect \
+    --protocol=gp \
+    --user="$GP_USER" \
+    --passwd-on-stdin \
+    --background \
+    --pid-file=/tmp/gp-vpn-openconnect.pid \
+    "$GP_GW"
+' sh "$ENV_FILE" < "$PW_STREAM" > "$LOG" 2>&1
+
+# Give the tunnel time to come up: TLS handshake, auth, then the interface.
+for _ in $(seq 1 30); do
+  sleep 1
+  TUN_NOW="$(tun_list)"
+  if [[ "$TUN_NOW" != "$TUN_BEFORE" && -n "$TUN_NOW" ]]; then
+    echo "Connected."
+    exit 0
+  fi
+  if ! pgrep -x openconnect >/dev/null 2>&1; then
+    break
+  fi
+done
+
+if grep -qiE 'auth-failed|Login failed|authentication failed|Invalid username|empty' "$LOG"; then
+  echo "Login rejected: wrong username or password."
+  exit 4
 fi
+if grep -qiE 'getaddrinfo failed|Failed to open HTTPS|Connection refused|Error in the pull function' "$LOG"; then
+  echo "Gateway unreachable: $GATEWAY"
+  exit 5
+fi
+
+echo "Connection failed."
+grep -iE 'auth|fail|error|credentials|login|512|SSL|certificate' "$LOG" | tail -6
+exit 1

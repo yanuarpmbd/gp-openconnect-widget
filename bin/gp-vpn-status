@@ -1,9 +1,18 @@
 #!/bin/bash
-# Prints "connected" if an openconnect VPN session is running, else
-# "disconnected". Used by the bar widget to color the icon.
-set -euo pipefail
+# Prints "connected" when a GlobalProtect tunnel is up, "disconnected"
+# otherwise. Read by the bar widget.
+#
+# Judged by a tun interface that actually carries an address, because that is
+# what proves the tunnel is live: the openconnect process can linger during
+# teardown, and the pid-file it writes is not dependable.
+set -uo pipefail
 
-if pgrep -x openconnect >/dev/null 2>&1; then
+if ! pgrep -x openconnect >/dev/null 2>&1; then
+  echo disconnected
+  exit 0
+fi
+
+if ip -o -4 addr show 2>/dev/null | grep -qE ': (tun|ppp)[0-9]+ +inet '; then
   echo connected
 else
   echo disconnected

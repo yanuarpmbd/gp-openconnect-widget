@@ -1,16 +1,30 @@
 #!/bin/bash
 # Disconnects the running GlobalProtect/openconnect session.
-set -euo pipefail
+#
+# Teardown needs root because the tunnel and routing were set up by
+# openconnect running under pkexec. `sudo` is used so a terminal run gets a
+# normal password prompt; the widget calls this through its own privilege
+# path.
+set -uo pipefail
 
-if [[ -f /run/gp-vpn.pid ]] && sudo kill "$(cat /run/gp-vpn.pid)" 2>/dev/null; then
-  echo "VPN disconnected."
-else
-  echo "No active pid-file found, trying pkill openconnect..."
-  if sudo pkill -x openconnect; then
-    echo "VPN disconnected."
-  else
-    echo "No running openconnect session found."
-  fi
+if ! pgrep -x openconnect >/dev/null 2>&1; then
+  echo "No running openconnect session found."
+  exit 0
 fi
 
-sleep 1.5
+# SIGINT lets openconnect tear the tunnel and routes down cleanly. SIGTERM
+# can leave the tun interface behind.
+pkexec pkill -INT -x openconnect
+
+# Wait for it to actually go away instead of assuming it did; the interface
+# is the thing that matters, not the process.
+for _ in $(seq 1 15); do
+  sleep 1
+  if ! pgrep -x openconnect >/dev/null 2>&1; then
+    echo "VPN disconnected."
+    exit 0
+  fi
+done
+
+echo "VPN did not disconnect cleanly; still running."
+exit 1
