@@ -1,0 +1,13 @@
+# Arch Linux / makepkg build artifacts
+*.pkg.tar.*
+src/
+pkg/
+packaging/aur/gp-openconnect-widget/
+packaging/aur/*.pkg.tar.*
+
+# Logs, evidence, and temp files
+*.log
+evidence/
+RINGKASAN*
+/tmp/
+.DS_Store

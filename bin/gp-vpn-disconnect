@@ -18,13 +18,22 @@ pkexec pkill -INT -x openconnect
 
 # Wait for it to actually go away instead of assuming it did; the interface
 # is the thing that matters, not the process.
-for _ in $(seq 1 15); do
+for _ in $(seq 1 10); do
   sleep 1
   if ! pgrep -x openconnect >/dev/null 2>&1; then
     echo "VPN disconnected."
     exit 0
   fi
 done
+
+echo "VPN did not terminate on SIGINT; forcing shutdown with SIGKILL..."
+pkexec pkill -KILL -x openconnect 2>/dev/null || true
+sleep 1
+
+if ! pgrep -x openconnect >/dev/null 2>&1; then
+  echo "VPN disconnected."
+  exit 0
+fi
 
 echo "VPN did not disconnect cleanly; still running."
 exit 1

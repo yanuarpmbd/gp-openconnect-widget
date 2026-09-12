@@ -1,0 +1,24 @@
+pkgbase = gp-openconnect-widget-git
+	pkgdesc = GlobalProtect VPN bar widget and connection scripts for Omarchy
+	pkgver = 1.1.0.r5.g0cee1a0
+	pkgrel = 1
+	url = https://github.com/yanuarpmbd/omarchy-gp-vpn-widget
+	install = gp-openconnect-widget.install
+	arch = any
+	license = MIT
+	makedepends = git
+	depends = omarchy
+	depends = openconnect
+	depends = libsecret
+	depends = iproute2
+	depends = procps-ng
+	depends = curl
+	depends = jq
+	provides = gp-openconnect-widget
+	provides = omarchy-gp-vpn-widget
+	conflicts = gp-openconnect-widget
+	conflicts = omarchy-gp-vpn-widget
+	source = gp-openconnect-widget::git+https://github.com/yanuarpmbd/omarchy-gp-vpn-widget.git
+	sha256sums = SKIP
+
+pkgname = gp-openconnect-widget-git

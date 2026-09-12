@@ -1,5 +1,5 @@
 #!/bin/bash
-# Uninstalls the GlobalProtect VPN bar widget for Omarchy.
+# Uninstalls gp-openconnect-widget for Omarchy.
 set -euo pipefail
 
 PLUGIN_ID="bol.gpvpn"
@@ -15,6 +15,6 @@ if [[ -d $PLUGIN_DIR ]]; then
 fi
 
 echo "Removing CLI scripts from $BIN_DEST ..."
-rm -f "$BIN_DEST/gp-vpn-connect" "$BIN_DEST/gp-vpn-disconnect" "$BIN_DEST/gp-vpn-status"
+rm -f "$BIN_DEST"/gp-vpn-*
 
-echo "Done. (Config at ~/.config/omarchy-gp-vpn/gateway.conf was left in place; remove it manually if needed)"
+echo "Done."

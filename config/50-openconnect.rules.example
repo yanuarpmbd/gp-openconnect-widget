@@ -1,0 +1,17 @@
+// Polkit rule example for Omarchy GlobalProtect VPN widget.
+//
+// Installing this rule allows members of the 'wheel' administrative group
+// to run openconnect via pkexec without showing a system password prompt dialog,
+// making VPN connection instantaneous and preventing authentication delays.
+//
+// To install:
+//   sudo cp config/50-openconnect.rules.example /etc/polkit-1/rules.d/50-openconnect.rules
+//   sudo chmod 644 /etc/polkit-1/rules.d/50-openconnect.rules
+//
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/bin/openconnect" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
